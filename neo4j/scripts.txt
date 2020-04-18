@@ -1,0 +1,175 @@
+
+
+1. Load CSV
+
+// Canada file by Kaggle
+
+USING PERIODIC COMMIT 1000
+LOAD CSV WITH HEADERS FROM 'file:///individual-level-cases.csv' AS line
+// WITH line LIMIT 5
+MERGE (p:Province:`Canada`{name:line.province})
+CREATE (c:Case:`Canada`{caseId:line.case_id})
+SET c.ageGroup = line.age, c.healthRegion = line.health_region, c.reportDate = line.date_report, 
+    c.acquireMethod = line.locally_acquired, c.acquireSource = line.travel_history_country, c.source = line.case_source, 
+    c.sex = line.sex, c.province = line.province, c.community = line.community, 
+    c.linkedCase = line.linked_case
+MERGE (c) -[:LIVES_IN]-> (p)
+WITH c,p,split(line.travel_history_country,',') AS places
+UNWIND places AS place
+MERGE (pl:Place{name:trim(place)})
+MERGE (c) -[:HAS_VISITED]-> (pl)
+
+Added 34423 labels, created 17243 nodes, set 121199 properties, created 17766 relationships, completed after 4133 ms.
+
+
+// Korea file: 
+
+USING PERIODIC COMMIT 1000
+LOAD CSV WITH HEADERS FROM 'file:///PatientInfo.csv' AS line
+// WITH line LIMIT 5
+MERGE (p:Province:`South Korea`{name:line.province})
+CREATE (c:Case:`South Korea`{caseId:line.patient_id})
+SET c.ageGroup = line.age, c.healthRegion = line.city, c.reportDate = line.confirmed_date, 
+    c.acquireMethod = line.infection_case, c.acquireSource = line.infection_case, c.deceasedDate = line.deceased_date,
+    c.sex = line.sex, c.province = line.province, c.linkedCase = line.infected_by, c.state = line.state 
+MERGE (c) -[:LIVES_IN]-> (p)
+
+// Set Deceased label: 61
+MATCH (c:Case) 
+WHERE c.state = 'deceased'
+SET c:Deceased
+
+
+
+
+Added 6290 labels, created 3145 nodes, set 23919 properties, created 3128 relationships, completed after 4878 ms.
+
+2. Create extra relationships
+
+// Canada file: 
+MATCH (c:Case) 
+WHERE c.community IS NOT NULL
+WITH c
+MERGE (cm:Community{name:c.community})
+MERGE (c) -[:STAYS_AT]-> (cm)
+
+
+// Canada file: 59,60,312
+MATCH (c:Case) 
+WHERE c.linkedCase IS NOT NULL
+WITH c
+MERGE (c2:Case{caseId:c.linkedCase})
+MERGE (c) -[:INFECTED_FROM]-> (c2)
+
+
+// Korea file
+
+MATCH (c:`South Korea`) 
+WHERE c.linkedCase IS NOT NULL
+WITH c
+MERGE (c2:Case{caseId:c.linkedCase})
+MERGE (c) -[:INFECTED_FROM]-> (c2)
+
+
+// Cleansing
+
+MATCH (c:Case)
+WHERE c.reportDate IS NOT NULL
+WITH c, apoc.date.parse(c.reportDate, "ms", "dd/MM/yyyy") AS ms
+SET c.confirmedDate = date(datetime({epochmillis: ms}))
+
+
+3. Schema
+
+Indexes
+   ON :Case(caseId) ONLINE 
+   ON :Case(reportDate) ONLINE 
+   ON :Case(sex) ONLINE 
+
+No constraints
+
+
+
+4. Location data
+
+//full spreadsheet with synthetic data
+//https://docs.google.com/spreadsheets/d/1R-XVuynPsOWcXSderLpq3DacZdk10PZ8v6FiYGTncIE/edit#gid=0
+
+// person sheet
+// https://docs.google.com/spreadsheets/u/0/d/1R-XVuynPsOWcXSderLpq3DacZdk10PZ8v6FiYGTncIE/export?format=csv&id=1R-XVuynPsOWcXSderLpq3DacZdk10PZ8v6FiYGTncIE&gid=0
+// Person: PersonId	PersonName	Healthstatus	ConfirmedTime
+
+// place sheet
+// https://docs.google.com/spreadsheets/u/0/d/1R-XVuynPsOWcXSderLpq3DacZdk10PZ8v6FiYGTncIE/export?format=csv&id=1R-XVuynPsOWcXSderLpq3DacZdk10PZ8v6FiYGTncIE&gid=205425553
+// Place: PlaceId	PlaceName	PlaceType   Lat Long
+
+
+// stays sheet
+// https://docs.google.com/spreadsheets/u/0/d/1R-XVuynPsOWcXSderLpq3DacZdk10PZ8v6FiYGTncIE/export?format=csv&id=1R-XVuynPsOWcXSderLpq3DacZdk10PZ8v6FiYGTncIE&gid=1261126668
+// StayId	PersonId	PlaceId	StartTime	EndTime
+
+
+//import the persons
+load csv with headers from
+"https://docs.google.com/spreadsheets/u/0/d/1R-XVuynPsOWcXSderLpq3DacZdk10PZ8v6FiYGTncIE/export?format=csv&id=1R-XVuynPsOWcXSderLpq3DacZdk10PZ8v6FiYGTncIE&gid=0" as csv
+create (p:Person {id: csv.PersonId, name:csv.PersonName, healthstatus:csv.Healthstatus, confirmedtime:datetime(csv.ConfirmedTime)});
+
+
+//import the places
+load csv with headers from
+"https://docs.google.com/spreadsheets/u/0/d/1R-XVuynPsOWcXSderLpq3DacZdk10PZ8v6FiYGTncIE/export?format=csv&id=1R-XVuynPsOWcXSderLpq3DacZdk10PZ8v6FiYGTncIE&gid=205425553" as csv
+create (p:Place {id: csv.PlaceId, name:csv.PlaceName, type:csv.PlaceType, location:point({x: toFloat(csv.Lat), y: toFloat(csv.Long)})});
+
+create index on :Place(id);
+create index on :Place(location);
+create index on :Place(name);
+create index on :Person(id);
+create index on :Person(name);
+create index on :Person(healthstatus);
+create index on :Person(confirmedtime);
+
+//import the stays
+load csv with headers from
+"https://docs.google.com/spreadsheets/u/0/d/1R-XVuynPsOWcXSderLpq3DacZdk10PZ8v6FiYGTncIE/export?format=csv&id=1R-XVuynPsOWcXSderLpq3DacZdk10PZ8v6FiYGTncIE&gid=1261126668" as csv
+match (p:Person {id:csv.PersonId}), (pl:Place {id:csv.PlaceId})
+create (p)-[:STAYED_AT]->(s:Stay {id:csv.StayId, starttime:datetime(csv.StartTime), endtime:datetime(csv.EndTime)})-[:LOCATED_AT]->(pl);
+
+//calculate duration of stay
+match (s:Stay)
+set s.duration=duration.inSeconds(s.starttime,s.endtime);
+
+//who has a sick person potentially infected
+match (p:Person {healthstatus:"Sick"})
+with p
+limit 1
+match (p)--(s1:Stay)--(pl:Place)--(s2:Stay)--(p2:Person {healthstatus:"Healthy"})
+return p.name as Spreader, s1.starttime as SpreaderStarttime, s2.endtime as SpreaderEndtime, pl.name as PlaceVisited, p2.name as Target, s2.starttime as TargetStarttime, s2.endtime as TargetEndttime;
+
+//who has a sick person potentially infected - VISUAL
+match (p:Person {healthstatus:"Sick"})
+with p
+limit 10
+match path = (p)-->(s1:Stay)-->(pl:Place)<--(s2:Stay)<--(p2:Person {healthstatus:"Healthy"})
+return path;
+
+//who has a sick person infected - with time overlap
+//The latest of start times must occur before (or at the same time) as the earliest of the end times for the ranges to overlap.
+match (p:Person {healthstatus:"Sick"})-->(s1:Stay)-->(pl:Place)
+with p,s1,pl
+limit 10
+match path = (p)-->(s1)-->(pl)<--(s2:Stay)<--(p2:Person {healthstatus:"Healthy"})
+WITH path, apoc.coll.max([s1.starttime.epochMillis, s2.starttime.epochMillis]) as maxStart,
+     apoc.coll.min([s1.endtime.epochMillis, s2.endtime.epochMillis]) as minEnd
+where maxStart <= minEnd
+return path
+
+//find sick person that has visited more than 10 places since being infected
+match (p:Person {healthstatus:"Sick"})-->(s:Stay)-->(pl:Place)
+where s.starttime > p.confirmedtime
+and count(p) > 10
+return p,s,pl;
+
+
+//prepare for betweenness analysis
+match (p:Person)-->(s1:Stay)-->(pl:Place)<--(s2:Stay)<--(p)
+merge (p)-[:INFERRED_LINK_WITH_PLACE]->
